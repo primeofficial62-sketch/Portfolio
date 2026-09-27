@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PrimeCreatives Admin</title>
+<meta name="robots" content="noindex,nofollow">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: { extend: {
+    colors: {
+      bg:"#0a0806", card:"#1c1814", orange:"#f59e0b",
+      "orange-deep":"#d97706", cream:"#faf6f1", muted:"#a89f94"
+    },
+    fontFamily:{sans:["Inter","system-ui","sans-serif"],display:["Sora","system-ui","sans-serif"]}
+  }}
+};
+</script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Sora:wght@600;700;800&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box} body{margin:0;background:#0a0806;color:#faf6f1;font-family:Inter,system-ui,sans-serif}
+.font-display{font-family:Sora,system-ui,sans-serif}.glass{background:rgba(28,24,20,.88);backdrop-filter:blur(16px);border:1px solid rgba(250,246,241,.1)}
+.shake{animation:shake .4s ease}@keyframes shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-6px)}40%,80%{transform:translateX(6px)}}
+input,textarea,select,button{font-family:inherit}input:focus,textarea:focus,select:focus{outline:2px solid rgba(245,158,11,.45);outline-offset:1px}
+.digit-box{width:3rem;height:3.5rem;text-align:center;font-size:1.5rem;font-weight:700;background:#14110e;border:1px solid rgba(250,246,241,.15);border-radius:.75rem;color:#faf6f1}
+::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:#333;border-radius:4px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- React and Supabase setup -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel" data-presets="env,react">
+const SUPABASE_URL = "https://ilaetdddupayvtdaeewj.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_6HYx9w5kJkpytxuby9Ky3A_2vrsRpPA";
+const STORAGE_BUCKET = "project-images";
+
+const SESSION_HOURS = 8;
+const IDLE_MS = 30 * 60 * 1000;
+const LOCKOUT_KEY = "primecreatives_pin_lockout_v4";
+const FAILCOUNT_KEY = "primecreatives_pin_failcount_v4";
+const FIXED_PIN = "0110";
+
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+  auth:{persistSession:true,autoRefreshToken:true}
+});
+
+function getFailCount(){return Number(localStorage.getItem(FAILCOUNT_KEY)||"0");}
+function bumpFail(){
+  const fails=getFailCount()+1;
+  localStorage.setItem(FAILCOUNT_KEY,String(fails));
+  if(fails>=5){
+    const until=Date.now()+10*60*1000;
+    localStorage.setItem(LOCKOUT_KEY,String(until));
+    return{lockedUntil:until,fails};
+  }
+  return{lockedUntil:null,fails};
+}
+function clearFails(){localStorage.removeItem(FAILCOUNT_KEY);localStorage.removeItem(LOCKOUT_KEY);}
+function getLockoutUntil(){
+  const v=localStorage.getItem(LOCKOUT_KEY);if(!v)return null;
+  const n=Number(v);
+  if(Date.now()>n){clearFails();return null}
+  return n;
+}
+
+async function ensureAnonymousAuth(){
+  const {data:{session}}=await sb.auth.getSession();
+  if(session)return session;
+  const {data,error}=await sb.auth.signInAnonymously();
+  if(error)throw new Error("Enable Anonymous Sign-Ins in Supabase Authentication first.");
+  return data.session;
+}
+
+async function requireSession(){
+  const {data,error}=await sb.rpc("admin_is_admin_session");
+  if(error||data!==true)throw new Error("Admin is locked. Enter your PIN again.");
+  return true;
+}
+
+async function unlockWithPin(pin){
+  const {data,error}=await sb.rpc("admin_verify_pin",{p_pin:pin});
+  if(error)throw error;
+  return data===true;
+}
+
+async function setupPin(pin){
+  const {data,error}=await sb.rpc("admin_setup_pin",{p_pin:pin});
+  if(error)throw error;
+  return data===true;
+}
+
+async function hasActiveAdminSession(){
+  try{
+    const {data,error}=await sb.rpc("admin_is_admin_session");
+    if(error)return false;
+    return data===true;
+  }catch(e){return false}
+}
+
+function toast(msg,type="info"){
+  const el=document.createElement("div");el.textContent=msg;
+  el.className="fixed bottom-6 right-6 z-[9999] px-4 py-3 rounded-xl text-sm font-medium shadow-lg "+
+    (type==="error"?"bg-red-600 text-white":type==="success"?"bg-emerald-600 text-white":"bg-[#1c1814] text-[#faf6f1] border border-white/10");
+  document.body.appendChild(el);setTimeout(()=>el.remove(),3500);
+}
+
+function PinGate({onUnlock}){
+  const[mode,setMode]=useState("loading"),[digits,setDigits]=useState(["","","",""]),[busy,setBusy]=useState(false);
+  useEffect(()=>{(async()=>{
+    await ensureAnonymousAuth();
+    if(await hasActiveAdminSession()){clearFails();onUnlock();return;}
+    const{data,error}=await sb.rpc("admin_has_pin");
+    if(error)throw error;
+    if(data===true){
+      try{
+        const ok=await unlockWithPin(FIXED_PIN);
+        if(ok){clearFails();onUnlock();return;}
+      }catch(e){}
+      setMode("unlock");
+    }else{
+      try{
+        const ok=await setupPin(FIXED_PIN);
+        if(ok){clearFails();onUnlock();return;}
+      }catch(e){}
+      setMode("setup");
+    }
+  })().catch(e=>{toast(e.message||"Unable to connect","error");setMode("unlock")});},[onUnlock]);
+
+  const submit=async(pin)=>{setBusy(true);try{
+    if(!/^\d{4}$/.test(pin))throw new Error("Enter your 4-digit PIN");
+    const ok=await unlockWithPin(pin);
+    if(!ok){bumpFail();toast("Incorrect PIN","error");setDigits(["","","",""]);return;}
+    clearFails();toast("Unlocked","success");onUnlock();
+  }catch(e){toast(e.message||"Error","error")}finally{setBusy(false)}}
+
+  if(mode==="loading")return <div className="min-h-screen flex items-center justify-center bg-bg"><p className="text-muted">Loading…</p></div>;
+  return <div className="min-h-screen flex items-center justify-center bg-bg p-6">
+    <div className="glass rounded-2xl p-8 w-full max-w-sm">
+      <div className="w-12 h-12 rounded-full bg-orange text-bg font-display font-extrabold flex items-center justify-center mb-6 mx-auto">PC</div>
+      <h1 className="font-display text-xl font-bold text-center mb-1">Admin unlock</h1>
+      <p className="text-muted text-sm text-center mb-6">Enter your 4-digit PIN</p>
+      <button type="button" onClick={()=>submit(digits.join(""))} className="w-full px-4 py-2 bg-orange text-bg rounded-xl font-semibold disabled:opacity-50" disabled={digits.join("").length!==4||busy}>
+        {busy?"Please wait…":"Unlock"}
+      </button>
+    </div>
+  </div>;
+}
+
+function App(){const[authed,setAuthed]=useState(false);return authed?<div className="text-center p-8"><h1 className="text-2xl mb-4">Admin Dashboard</h1><p className="text-muted mb-4">Dashboard coming soon...</p></div>:<PinGate onUnlock={()=>setAuthed(true)}/>;}
+
+async function boot(){ReactDOM.createRoot(document.getElementById("root")).render(<App/>);}
+boot();
+</script>
+</body>
+</html>
