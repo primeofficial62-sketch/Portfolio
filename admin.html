@@ -30,7 +30,6 @@ input,textarea,select,button{font-family:inherit}input:focus,textarea:focus,sele
 <body>
 <div id="root"></div>
 
-<!-- React and Supabase setup -->
 <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
@@ -39,50 +38,25 @@ input,textarea,select,button{font-family:inherit}input:focus,textarea:focus,sele
 <script type="text/babel" data-presets="env,react">
 const SUPABASE_URL = "https://ilaetdddupayvtdaeewj.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_6HYx9w5kJkpytxuby9Ky3A_2vrsRpPA";
-const STORAGE_BUCKET = "project-images";
-
-const SESSION_HOURS = 8;
-const IDLE_MS = 30 * 60 * 1000;
-const LOCKOUT_KEY = "primecreatives_pin_lockout_v4";
-const FAILCOUNT_KEY = "primecreatives_pin_failcount_v4";
 const FIXED_PIN = "0110";
 
-const { useState, useEffect, useRef, useCallback, useMemo } = React;
+const { useState, useEffect } = React;
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth:{persistSession:true,autoRefreshToken:true}
 });
 
-function getFailCount(){return Number(localStorage.getItem(FAILCOUNT_KEY)||"0");}
-function bumpFail(){
-  const fails=getFailCount()+1;
-  localStorage.setItem(FAILCOUNT_KEY,String(fails));
-  if(fails>=5){
-    const until=Date.now()+10*60*1000;
-    localStorage.setItem(LOCKOUT_KEY,String(until));
-    return{lockedUntil:until,fails};
-  }
-  return{lockedUntil:null,fails};
-}
-function clearFails(){localStorage.removeItem(FAILCOUNT_KEY);localStorage.removeItem(LOCKOUT_KEY);}
-function getLockoutUntil(){
-  const v=localStorage.getItem(LOCKOUT_KEY);if(!v)return null;
-  const n=Number(v);
-  if(Date.now()>n){clearFails();return null}
-  return n;
+function toast(msg,type="info"){\n  const el=document.createElement("div");el.textContent=msg;
+  el.className="fixed bottom-6 right-6 z-[9999] px-4 py-3 rounded-xl text-sm font-medium shadow-lg "+
+    (type==="error"?"bg-red-600 text-white":type==="success"?"bg-emerald-600 text-white":"bg-[#1c1814] text-[#faf6f1] border border-white/10");
+  document.body.appendChild(el);setTimeout(()=>el.remove(),3500);
 }
 
 async function ensureAnonymousAuth(){
   const {data:{session}}=await sb.auth.getSession();
   if(session)return session;
   const {data,error}=await sb.auth.signInAnonymously();
-  if(error)throw new Error("Enable Anonymous Sign-Ins in Supabase Authentication first.");
+  if(error)throw new Error("Enable Anonymous Sign-Ins in Supabase first.");
   return data.session;
-}
-
-async function requireSession(){
-  const {data,error}=await sb.rpc("admin_is_admin_session");
-  if(error||data!==true)throw new Error("Admin is locked. Enter your PIN again.");
-  return true;
 }
 
 async function unlockWithPin(pin){
@@ -105,59 +79,113 @@ async function hasActiveAdminSession(){
   }catch(e){return false}
 }
 
-function toast(msg,type="info"){
-  const el=document.createElement("div");el.textContent=msg;
-  el.className="fixed bottom-6 right-6 z-[9999] px-4 py-3 rounded-xl text-sm font-medium shadow-lg "+
-    (type==="error"?"bg-red-600 text-white":type==="success"?"bg-emerald-600 text-white":"bg-[#1c1814] text-[#faf6f1] border border-white/10");
-  document.body.appendChild(el);setTimeout(()=>el.remove(),3500);
-}
-
 function PinGate({onUnlock}){
-  const[mode,setMode]=useState("loading"),[digits,setDigits]=useState(["","","",""]),[busy,setBusy]=useState(false);
+  const[mode,setMode]=useState("loading");
+  const[digits,setDigits]=useState(["","","",""]);
+  const[busy,setBusy]=useState(false);
+
   useEffect(()=>{(async()=>{
     await ensureAnonymousAuth();
-    if(await hasActiveAdminSession()){clearFails();onUnlock();return;}
+    if(await hasActiveAdminSession()){onUnlock();return;}
     const{data,error}=await sb.rpc("admin_has_pin");
     if(error)throw error;
     if(data===true){
       try{
         const ok=await unlockWithPin(FIXED_PIN);
-        if(ok){clearFails();onUnlock();return;}
+        if(ok){onUnlock();return;}
       }catch(e){}
       setMode("unlock");
     }else{
       try{
         const ok=await setupPin(FIXED_PIN);
-        if(ok){clearFails();onUnlock();return;}
+        if(ok){onUnlock();return;}
       }catch(e){}
       setMode("setup");
     }
-  })().catch(e=>{toast(e.message||"Unable to connect","error");setMode("unlock")});},[onUnlock]);
+  })().catch(e=>{toast(e.message||"Error","error");setMode("unlock")});},[onUnlock]);
 
-  const submit=async(pin)=>{setBusy(true);try{
-    if(!/^\d{4}$/.test(pin))throw new Error("Enter your 4-digit PIN");
-    const ok=await unlockWithPin(pin);
-    if(!ok){bumpFail();toast("Incorrect PIN","error");setDigits(["","","",""]);return;}
-    clearFails();toast("Unlocked","success");onUnlock();
-  }catch(e){toast(e.message||"Error","error")}finally{setBusy(false)}}
+  const submit=async()=>{
+    const pin=digits.join("");
+    if(!/^\\d{4}$/.test(pin)){toast("Enter 4 digits","error");return;}
+    setBusy(true);
+    try{
+      const ok=await unlockWithPin(pin);
+      if(!ok){toast("Incorrect PIN","error");setDigits(["","","",""]);return;}
+      toast("Unlocked!","success");
+      onUnlock();
+    }catch(e){toast(e.message||"Error","error");}
+    finally{setBusy(false)}
+  };
 
   if(mode==="loading")return <div className="min-h-screen flex items-center justify-center bg-bg"><p className="text-muted">Loading…</p></div>;
+  
   return <div className="min-h-screen flex items-center justify-center bg-bg p-6">
     <div className="glass rounded-2xl p-8 w-full max-w-sm">
       <div className="w-12 h-12 rounded-full bg-orange text-bg font-display font-extrabold flex items-center justify-center mb-6 mx-auto">PC</div>
-      <h1 className="font-display text-xl font-bold text-center mb-1">Admin unlock</h1>
+      <h1 className="font-display text-xl font-bold text-center mb-1">Admin Unlock</h1>
       <p className="text-muted text-sm text-center mb-6">Enter your 4-digit PIN</p>
-      <button type="button" onClick={()=>submit(digits.join(""))} className="w-full px-4 py-2 bg-orange text-bg rounded-xl font-semibold disabled:opacity-50" disabled={digits.join("").length!==4||busy}>
-        {busy?"Please wait…":"Unlock"}
-      </button>
+      <div className="flex gap-2 justify-center mb-6">
+        {[0,1,2,3].map(i=><input key={i} className="digit-box" inputMode="numeric" maxLength="1" value={digits[i]} onChange={e=>{const n=[...digits];n[i]=e.target.value.replace(/\\D/g,"").slice(0,1);setDigits(n);}} disabled={busy}/>)}
+      </div>
+      <button className="w-full px-4 py-2.5 bg-orange text-bg rounded-full font-semibold disabled:opacity-50" onClick={submit} disabled={busy||digits.join("").length!==4}>{busy?"Please wait…":"Unlock"}</button>
     </div>
   </div>;
 }
 
-function App(){const[authed,setAuthed]=useState(false);return authed?<div className="text-center p-8"><h1 className="text-2xl mb-4">Admin Dashboard</h1><p className="text-muted mb-4">Dashboard coming soon...</p></div>:<PinGate onUnlock={()=>setAuthed(true)}/>;}
+function AdminDashboard({onLock}){
+  const[view,setView]=useState("overview");
+  const[data,setData]=useState({projects:[],services:[],messages:[]});
+  const[loading,setLoading]=useState(true);
 
-async function boot(){ReactDOM.createRoot(document.getElementById("root")).render(<App/>);}
-boot();
+  useEffect(()=>{loadData();},[]);
+
+  const loadData=async()=>{
+    try{
+      setLoading(true);
+      const p=await sb.from("projects").select("*").order("display_order");
+      const s=await sb.from("services").select("*").order("display_order");
+      const m=await sb.from("contact_messages").select("*").order("created_at",{ascending:false});
+      setData({projects:p.data||[],services:s.data||[],messages:m.data||[]});
+    }catch(e){toast(e.message,"error");}
+    finally{setLoading(false)}
+  };
+
+  const lock=async()=>{await sb.auth.signOut();onLock();};
+
+  if(loading)return <div className="min-h-screen flex items-center justify-center bg-bg"><p className="text-muted">Loading…</p></div>;
+
+  return <div className="min-h-screen bg-bg">
+    <header className="glass border-b border-white/10 p-4 sticky top-0">
+      <div className="max-w-5xl mx-auto flex justify-between items-center">
+        <h1 className="font-display font-bold text-lg">PrimeCreatives Admin</h1>
+        <button onClick={lock} className="text-red-400 text-sm font-semibold hover:bg-white/5 px-4 py-2 rounded-lg">Lock</button>
+      </div>
+    </header>
+
+    <nav className="glass border-b border-white/10 p-4 sticky top-16">
+      <div className="max-w-5xl mx-auto flex gap-2 overflow-x-auto">
+        {["overview","projects","services","messages"].map(v=><button key={v} onClick={()=>setView(v)} className={`px-4 py-2 rounded-lg text-sm font-semibold whitespace-nowrap ${view===v?"bg-orange/20 text-orange":"text-muted hover:bg-white/5"}`}>{v.charAt(0).toUpperCase()+v.slice(1)}</button>)}
+      </div>
+    </nav>
+
+    <main className="max-w-5xl mx-auto p-4 md:p-8">
+      {view==="overview"&&<div className="grid grid-cols-3 gap-4"><div className="glass rounded-xl p-6"><p className="text-muted text-xs mb-2">Total Projects</p><p className="font-display text-3xl text-orange">{data.projects.length}</p></div><div className="glass rounded-xl p-6"><p className="text-muted text-xs mb-2">Services</p><p className="font-display text-3xl text-orange">{data.services.length}</p></div><div className="glass rounded-xl p-6"><p className="text-muted text-xs mb-2">Messages</p><p className="font-display text-3xl text-orange">{data.messages.length}</p></div></div>}
+      
+      {view==="projects"&&<div className="space-y-3"><h2 className="font-display text-xl font-bold mb-4">Projects ({data.projects.length})</h2>{data.projects.map(p=><div key={p.id} className="glass rounded-xl p-4"><p className="font-semibold">{p.title}</p><p className="text-xs text-muted">{p.category} · {p.status}</p></div>)}{!data.projects.length&&<p className="text-muted">No projects yet.</p>}</div>}
+      
+      {view==="services"&&<div className="space-y-3"><h2 className="font-display text-xl font-bold mb-4">Services ({data.services.length})</h2>{data.services.map(s=><div key={s.id} className="glass rounded-xl p-4"><p className="font-semibold">{s.title}</p><p className="text-xs text-muted">{s.description}</p></div>)}{!data.services.length&&<p className="text-muted">No services yet.</p>}</div>}
+      
+      {view==="messages"&&<div className="space-y-3"><h2 className="font-display text-xl font-bold mb-4">Contact Messages ({data.messages.length})</h2>{data.messages.map(m=><div key={m.id} className="glass rounded-xl p-4"><p className="font-semibold">{m.name}</p><p className="text-xs text-muted">{m.email}</p><p className="text-sm mt-2">{m.message}</p></div>)}{!data.messages.length&&<p className="text-muted">No messages yet.</p>}</div>}
+    </main>
+  </div>;
+}
+
+function App(){
+  const[authed,setAuthed]=useState(false);
+  return authed?<AdminDashboard onLock={()=>setAuthed(false)}/>:<PinGate onUnlock={()=>setAuthed(true)}/>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 </script>
 </body>
 </html>
